@@ -1,0 +1,79 @@
+GLOBAL:
+    LOG_LEVEL: 2
+    GPU_INDICES:
+    - 0
+    RANDOM_SEED: 0
+    ANOMALY_DETECTION: false
+    FILTER_WARNINGS: true
+    METHOD_TYPE: StochasticGS
+    DATASET_TYPE: MipNeRF360
+MODEL:
+    PLY_PATH: /TODO/garden.ply  # set this to the location of your 3DGS .ply file
+    CAMERA_PATH: null
+RENDERER:
+    PROPER_ANTIALIASING: false
+    USE_GPS: false
+    SUPERSAMPLING_FACTOR: 1
+    SAMPLES_PER_PIXEL: 1
+    DISABLE_PROGRESSIVE_RENDERING: false
+TRAINING:
+    LOAD_CHECKPOINT: null
+    MODEL_NAME: m360_garden
+    NUM_ITERATIONS: 0
+    RUN_VALIDATION: false
+    DATA:
+        PRELOADING_LEVEL: 0
+        FIELDS: []
+        PRECOMPUTE_RAYS: false
+        RAYS_TO_DEVICE: false
+    BACKUP:
+        FINAL_CHECKPOINT: false
+        RENDER_TESTSET: false
+        RENDER_TRAINSET: false
+        RENDER_VALSET: false
+        INTERMEDIATE_RENDERINGS: false
+        VISUALIZE_ERRORS: false
+        INTERVAL: -1
+        TRAINING_STATE: false
+    TIMING:
+        ACTIVATE: false
+        INCLUDE_DATALOADING_IN_TOTAL: false
+        INCLUDE_PRETRAINING_IN_TOTAL: false
+        INCLUDE_POSTTRAINING_IN_TOTAL: false
+    WANDB:
+        ACTIVATE: false
+        ENTITY: null
+        PROJECT: nerficg
+        LOG_IMAGES: true
+        INDEX_VALIDATION: -1
+        INDEX_TRAINING: -1
+        INTERVAL: 1000
+        SWEEP_MODE:
+            ACTIVE: false
+            START_ITERATION: 999
+            ITERATION_STRIDE: 1000
+            NUM_IMAGES: -1
+    WRITE_VRAM_STATS: false
+    GUI:
+        ACTIVATE: true
+        RENDER_INTERVAL: 1
+        GUI_STATUS_ENABLED: true
+        GUI_STATUS_INTERVAL: 20
+        SKIP_GUI_SETUP: false  # setting to false for one launch allows disabling vsync persistently
+        FPS_ROLLING_AVERAGE_SIZE: 100
+        MAX_RENDERS_BETWEEN_GUI_UPDATES: 2
+DATASET:
+    PATH: /TODO/mipnerf360/garden  # set this to the location of your Mip-NeRF360 dataset
+    IMAGE_SCALE_FACTOR: 0.25
+    NORMALIZE_CUBE: null
+    NORMALIZE_RECENTER: false
+    BACKGROUND_COLOR:
+    - 0.0
+    - 0.0
+    - 0.0
+    NEAR_PLANE: 0.2
+    FAR_PLANE: 10000.0
+    TEST_STEP: 8
+    APPLY_PCA: false  # if model was trained in NeRFICG, set this to what was used during training
+    APPLY_PCA_RESCALE: false  # if model was trained in NeRFICG, set this to what was used during training
+
