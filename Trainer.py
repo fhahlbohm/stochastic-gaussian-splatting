@@ -72,8 +72,7 @@ class StochasticGSTrainer(GuiTrainer):
         Logger.log_info(f'number of primitives: {n_primitives:,}')
         with open(str(self.output_directory / 'n_primitives.txt'), 'w') as n_primitives_file:
             n_primitives_file.write(
-                f'Number of primitives: {n_primitives:,}\n'
-                f'\n'
+                f'Number of primitives: {n_primitives:,}\n\n'
                 f'N_primitives:{n_primitives}'
             )
 
