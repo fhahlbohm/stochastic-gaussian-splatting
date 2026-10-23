@@ -16,6 +16,7 @@ class Settings(NamedTuple):
     proper_antialiasing: bool  # whether to use proper antialiasing
     supersampling_factor: int  # factor for supersampling (2 -> render 2x2 subpixels)
     use_gps: bool  # whether to use Gaussian point splatting
+    hybrid_scheduling: bool  # whether to process large Gaussians in a separate load-balanced pass
 
     def as_tuple(self) -> tuple:
         return (
@@ -32,6 +33,7 @@ class Settings(NamedTuple):
             self.proper_antialiasing,
             self.supersampling_factor,
             self.use_gps,
+            self.hybrid_scheduling,
         )
 
 def render(

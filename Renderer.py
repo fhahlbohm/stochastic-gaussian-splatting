@@ -16,6 +16,7 @@ from Visual.utils import apply_color_map
 @Framework.Configurable.configure(
     PROPER_ANTIALIASING=False,
     USE_GPS=False,
+    HYBRID_SCHEDULING=False,
     SUPERSAMPLING_FACTOR=1,
     SAMPLES_PER_PIXEL=1,
     DISABLE_PROGRESSIVE_RENDERING=False,
@@ -72,6 +73,7 @@ class StochasticGSRenderer(BaseRenderer):
             self.PROPER_ANTIALIASING,
             self.SUPERSAMPLING_FACTOR,
             self.USE_GPS,
+            self.HYBRID_SCHEDULING,
         )
         samples_per_pixel = max(self.SAMPLES_PER_PIXEL, 1)
 

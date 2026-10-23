@@ -3,7 +3,7 @@
 ![CUDA](https://img.shields.io/badge/-CUDA-76B900?logo=NVIDIA&logoColor=white)&nbsp;
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
-__A CUDA implementation of two sorting-free, stochastic approaches for rendering [3D Gaussian Splatting](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/) models with **zero** VRAM overhead: if the model fits in VRAM, it renders exactly.__
+__A CUDA implementation of two sorting-free, stochastic approaches for rendering [3D Gaussian Splatting](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/) models with **zero** VRAM overhead: if the model fits in VRAM, it renders exactly. An optional hybrid scheduling trades a little extra VRAM for much faster rendering.__
 
 This project is built on the following papers and their open-source implementations. Consider a citation when applicable.
 
@@ -46,57 +46,62 @@ This project is built on the following papers and their open-source implementati
 
 ## Overview
 
-The backend offers two accumulation modes, selected by the `USE_GPS` flag:
+Each sample is rendered in two stages (`render.cu`):
 
-- **Stochastic transparency** (`accumulate_st_cu`): for every pixel inside a Gaussian's screen-space AABB,
-  the Gaussian is *accepted* with probability equal to its evaluated alpha at that pixel. Accepted
-  fragments race via a single `atomicMin` on a 64-bit framebuffer entry that packs
-  `(depth_bits << 32) | gaussian_index`, so each pixel retains the closest accepted Gaussian. This applies the
-  classic stochastic transparency idea to splatting, in the spirit of StochasticSplats.
-- **Gaussian Point Splatting (GPS)** (`accumulate_gps_cu`): instead of testing pixel centers, each Gaussian
-  emits a Poisson-distributed number of sample points drawn from its own 2D distribution, splatting each as a
-  point. This integrates the Gaussian over the pixel footprint by construction (see below).
+1. **Accumulation** keeps the closest *accepted* fragment of each (sub)pixel. `USE_GPS` selects one of two approaches:
+   - **Stochastic transparency** (`accumulate_st_cu`): for every pixel inside a Gaussian's screen-space AABB,
+     the Gaussian is *accepted* with probability equal to its evaluated alpha at that pixel. Accepted
+     fragments race via a single `atomicMin` on a 64-bit framebuffer entry that packs
+     `(depth_bits << 32) | gaussian_index`, so each pixel retains the closest accepted Gaussian. This applies the
+     classic stochastic transparency idea to splatting, in the spirit of StochasticSplats.
+   - **Gaussian Point Splatting (GPS)** (`accumulate_gps_cu`): instead of testing pixel centers, each Gaussian
+     emits a Poisson-distributed number of sample points drawn from its own 2D distribution, splatting each as a
+     point. This integrates the Gaussian over the pixel footprint by construction.
+2. **Resolving** (`resolve_cu`) evaluates spherical harmonics for the **single** winning Gaussian of each (sub)pixel
+   and writes color, depth, and alpha.
 
-A separate `resolve_cu` pass reads the winning fragment per (sub)pixel, evaluates spherical harmonics for the
-**single** winning Gaussian, and writes color, depth, and alpha. Averaging `SAMPLES_PER_PIXEL` independent
-frames — or accumulating them progressively across calls — converges to the correctly blended image. An
-optional integer `SUPERSAMPLING_FACTOR` renders the framebuffer at higher resolution and box-filters down.
+Averaging `SAMPLES_PER_PIXEL` independent frames — or accumulating them progressively across calls — converges to the
+correctly blended image. An optional integer `SUPERSAMPLING_FACTOR` renders the framebuffer at higher resolution and
+box-filters down.
 
-### Current Load Balancing Scheme and Its Limitations
+### Scatter Path
 
-Both accumulation kernels launch **one thread per Gaussian** and balance work *within a warp*: Gaussians with at
-most `n_sequential_threshold` (= 4) fragments are processed sequentially by their owning thread, while larger
-Gaussians are handled **cooperatively** — the whole 32-lane warp picks them up one at a time (parameters broadcast
-via `warp.shfl`) and splits their fragments across lanes. This keeps small primitives cheap while preventing a
-single fat Gaussian from stalling its lane.
-
-The limitations are inherent to the per-thread mapping:
+By default, both accumulation kernels (`accumulate_scatter.cu`) launch **one thread per Gaussian** and balance work
+*within a warp*: Gaussians with at most `n_sequential_threshold` (= 4) fragments are processed sequentially by their
+owning thread, while larger Gaussians are handled **cooperatively** — the whole 32-lane warp picks them up one at a time
+(parameters broadcast via `warp.shfl`) and splits their fragments across lanes. This keeps small primitives cheap and
+needs no memory besides the framebuffer, but the per-thread mapping has inherent limitations:
 
 - **No balancing across warps/blocks.** A warp that happens to contain one enormous Gaussian iterates many times
   while sibling warps sit idle — a classic tail effect that underutilizes the GPU.
 - **Serialized large Gaussians within a warp.** The cooperative loop walks the warp's large primitives one after
   another, so a warp with several big Gaussians processes them sequentially.
-- **The `max_fragments` cap** trades correctness for bounded cost: very large Gaussians are under-sampled, which can
-  show up as artifacts.
-- **GPS is worse here**, since the per-Gaussian point count is Poisson-distributed and effectively unbounded, making
-  the imbalance both larger and data-dependent.
-- **Supersampling scales well for GPS but poorly for ST.** A factor `s` multiplies each Gaussian's footprint by `s²`
-  (more pixels in the AABB for ST, more sample points for GPS). GPS absorbs this as additional independent points at
-  fine, uniform granularity, so it parallelizes cleanly and supersampling barely hurts throughput. ST instead piles
-  the `s²`-larger fragment count onto the coarse per-Gaussian (warp-cooperative) work unit, so the within-warp serial
-  iteration and the tail effect grow quadratically.
+- **GPS is affected even more**, since the per-Gaussian point count is Poisson-distributed and effectively unbounded,
+  making the imbalance both larger and data-dependent. The `max_fragments` cap bounds the cost but can under-sample
+  very large Gaussians.
 
-**A two-pass design could remove the imbalance** at the cost of some VRAM. Rather than queuing *every* fragment, only
-the **large** Gaussians (those above the cooperative threshold) need to be expanded: Pass 1 counts their fragments and
-prefix-sums them into a global work buffer; Pass 2 then launches **one thread per queued fragment**, giving those
-Gaussians uniform granularity, full occupancy, and no warp tail, while small Gaussians keep the cheap per-thread path.
-This caps the extra VRAM at the large Gaussians' fragment count rather than the whole scene. The original GPS
-implementation already applies this expand-and-distribute strategy to *every* Gaussian, large or small — which is why
-it outperforms this implementation for views dominated by large Gaussians (their work spreads more evenly), but falls
-behind on scenes with many small ones, where each tiny primitive needs its parameters to be loaded twice and pays a
-per-point bookkeeping cost that the sequential fast path avoids.
+As a result, the cost depends strongly on the view and grows quickly when Gaussians cover many pixels, e.g., when
+zooming out or supersampling.
 
-### Pre-computation and Quantization/Compression
+### Hybrid Scheduling
+
+`HYBRID_SCHEDULING` (off by default) removes the imbalance for both approaches while keeping the scatter path for most
+Gaussians. In exchange, it gives up the zero VRAM overhead: the extra memory grows with the number of large Gaussians (at
+most `max_binned_gaussians` are binned, beyond which they fall back to the scatter path).
+
+- **Stochastic transparency** (`accumulate_hybrid.cu`, bit-identical framebuffer): Gaussians whose bounding box covers
+  more than `binning_pixel_threshold` pixels are not scattered but binned into 8x8 tiles (the tiles of each tile row
+  follow from the extent of the ellipse within that row as in [AccuTile](https://arxiv.org/abs/2412.00578), sort by
+  tile index only, no depth sort). After the scatter pass, one block per tile loops over the binned Gaussians of its
+  tile and keeps the closest accepted fragment of each pixel in a register, so no atomics are needed and fragments
+  behind the current winner are rejected before evaluation.
+- **GPS** (`accumulate_hybrid_gps.cu`): the points of Gaussians with more than `binning_point_threshold` points are
+  split into chunks of `chunk_size` points, and one block per chunk splats one point per thread. As the points of a
+  Gaussian are independent samples, this only changes the random numbers, not the distribution of the result. This is
+  the expand-and-distribute strategy of the original GPS implementation applied to large Gaussians only, small ones keep
+  the sequential fast path that avoids loading their parameters twice and the per-point bookkeeping.
+
+### Possible Improvements
 
 - **Pre-compute the 3D covariance and opacity activation.** `project_gaussian` rebuilds `cov3d` (quaternion + scales)
   and applies `sigmoid(raw_opacity)` on every invocation, i.e. once per Gaussian *per sample*. Both can be computed
@@ -117,7 +122,7 @@ cited above:
 - **[atomicMin rendering](https://github.com/m-schuetz/compute_rasterizer)**: Markus Schütz et al.'s compute-shader point
   renderer popularized the 64-bit `atomicMin(depth | payload)` technique this renderer uses to resolve depth without sorting.
 - **[CuRast](https://github.com/m-schuetz/CuRast)**: A CUDA software rasterizer also by Markus Schütz et al. that
-  tackles a similar per-primitive load-balancing problem outlined above in the context of triangle rasterization.
+  tackles a similar per-primitive load-balancing problem in the context of triangle rasterization.
 
 
 ## Installation
@@ -175,6 +180,14 @@ so the example configs set `NUM_ITERATIONS: 0` and enable the interactive GUI. T
   dataset (`DATASET_TYPE: Empty`) along an optional predefined `CAMERA_PATH`. This is the right template for large
   scenes and fly-throughs; the example targets a 106M-Gaussian capture with a 600-frame camera path. Set
   `MODEL.PLY_PATH` and `CAMERA_PATH`.
+
+The `RENDERER` section selects how the model is rendered:
+
+- `USE_GPS`: Gaussian point splatting instead of stochastic transparency.
+- `HYBRID_SCHEDULING`: load-balanced processing of large Gaussians, see [Hybrid Scheduling](#hybrid-scheduling).
+- `SUPERSAMPLING_FACTOR`, `PROPER_ANTIALIASING`: integer supersampling and the antialiasing filter with opacity
+  compensation instead of plain dilation.
+- `SAMPLES_PER_PIXEL`, `DISABLE_PROGRESSIVE_RENDERING`: samples per call and whether consecutive calls accumulate.
 
 To launch, fill in the `/TODO/` paths and run the config through the standard NeRFICG entry point:
 ```shell
