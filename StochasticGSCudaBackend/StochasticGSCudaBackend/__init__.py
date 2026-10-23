@@ -1,2 +1,2 @@
-from .render import render, Settings
-__all__ = ['render', 'Settings']
+from .render import render, Settings, TemporalMode, History, create_k_buffer
+__all__ = ['render', 'Settings', 'TemporalMode', 'History', 'create_k_buffer']

@@ -25,8 +25,11 @@ __device__ inline void scatter_fragments(
     const float opacity,
     unsigned long long* __restrict__ framebuffer,
     const uint32_t width_int,
-    const uint32_t frame_idx)
+    const uint32_t frame_idx,
+    const uint8_t* __restrict__ blue_noise_slice,
+    const uint32_t blue_noise_rotation)
 {
+    const bool use_blue_noise = blue_noise_slice != nullptr;
     for (uint32_t fragment_idx = 0; active && fragment_idx < fragment_count && fragment_idx < n_sequential_threshold; fragment_idx++) {
         const uint32_t pixel_x = x_min + (fragment_idx % aabb_width);
         const uint32_t pixel_y = y_min + (fragment_idx / aabb_width);
@@ -35,7 +38,7 @@ __device__ inline void scatter_fragments(
         const float power = 0.5f * (conic.x * delta_x * delta_x + conic.z * delta_y * delta_y) + conic.y * delta_x * delta_y;
         const float alpha = opacity * expf(fminf(-power, 0.0f));
         if (alpha < min_alpha_threshold) continue;
-        const float sample = rand(frame_idx, gaussian_idx, pixel_x, pixel_y);
+        const float sample = use_blue_noise ? blue_noise(blue_noise_slice, blue_noise_rotation, gaussian_idx, pixel_x, pixel_y) : rand(frame_idx, gaussian_idx, pixel_x, pixel_y);
         if (sample >= alpha) continue;
 
         const uint32_t pixel_idx = pixel_y * width_int + pixel_x;
@@ -81,7 +84,7 @@ __device__ inline void scatter_fragments(
             const float power = 0.5f * (conic_coop.x * delta_x * delta_x + conic_coop.z * delta_y * delta_y) + conic_coop.y * delta_x * delta_y;
             const float alpha = opacity_coop * expf(fminf(-power, 0.0f));
             if (alpha < min_alpha_threshold) continue;
-            const float sample = rand(frame_idx, gaussian_idx_coop, pixel_x, pixel_y);
+            const float sample = use_blue_noise ? blue_noise(blue_noise_slice, blue_noise_rotation, gaussian_idx_coop, pixel_x, pixel_y) : rand(frame_idx, gaussian_idx_coop, pixel_x, pixel_y);
             if (sample >= alpha) continue;
 
             const uint32_t pixel_idx = pixel_y * width_int + pixel_x;

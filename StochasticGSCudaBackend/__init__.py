@@ -11,7 +11,7 @@ __install_command__ = [
 ]
 
 try:
-    from .StochasticGSCudaBackend.render import render, Settings
-    __all__ = ['render', 'Settings']
+    from .StochasticGSCudaBackend.render import render, Settings, TemporalMode, History, create_k_buffer
+    __all__ = ['render', 'Settings', 'TemporalMode', 'History', 'create_k_buffer']
 except ImportError:
     raise Framework.ExtensionError(name=__extension_name__, install_command=__install_command__)

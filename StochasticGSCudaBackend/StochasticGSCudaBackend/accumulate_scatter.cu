@@ -34,7 +34,9 @@ __global__ void accumulate_st_cu(
     const float near_plane,
     const float far_plane,
     const bool proper_antialiasing,
-    const float supersampling_factor)
+    const float supersampling_factor,
+    const uint8_t* __restrict__ blue_noise_slice,
+    const uint32_t blue_noise_rotation)
 {
     auto block = cg::this_thread_block();
     auto warp = cg::tiled_partition<32>(block);
@@ -71,7 +73,7 @@ __global__ void accumulate_st_cu(
 
     scatter_fragments(
         warp, active, gaussian_idx, fragment, x_min, y_min, aabb_width, fragment_count, mean2d_shifted, conic, opacity,
-        framebuffer, width_int, frame_idx);
+        framebuffer, width_int, frame_idx, blue_noise_slice, blue_noise_rotation);
 }
 
 __global__ void accumulate_gps_cu(
@@ -158,6 +160,8 @@ void accumulate_scatter(
     const uint32_t frame_idx,
     const CameraSettings& camera,
     const bool use_gps,
+    const uint8_t* blue_noise_slice,
+    const uint32_t blue_noise_rotation,
     const cudaStream_t stream)
 {
     using namespace scatter;
@@ -205,7 +209,9 @@ void accumulate_scatter(
             camera.near_plane,
             camera.far_plane,
             camera.proper_antialiasing,
-            supersampling_factor
+            supersampling_factor,
+            blue_noise_slice,
+            blue_noise_rotation
         );
         check_cuda("scatter::accumulate_st_cu");
     }

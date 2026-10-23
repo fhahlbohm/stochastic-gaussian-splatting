@@ -9,7 +9,7 @@ from Logging import Logger
 from Methods.Base.Renderer import BaseModel
 from Methods.Base.Renderer import BaseRenderer
 from Methods.StochasticGS.Model import StochasticGSModel
-from Methods.StochasticGS.StochasticGSCudaBackend import render, Settings
+from Methods.StochasticGS.StochasticGSCudaBackend import render, Settings, TemporalMode, History, create_k_buffer
 from Visual.utils import apply_color_map
 
 
@@ -20,6 +20,8 @@ from Visual.utils import apply_color_map
     SUPERSAMPLING_FACTOR=1,
     SAMPLES_PER_PIXEL=1,
     DISABLE_PROGRESSIVE_RENDERING=False,
+    SPATIAL_REUSE=False,
+    TEMPORAL_REUSE=False,
 )
 class StochasticGSRenderer(BaseRenderer):
     """Wrapper around the rendering backend."""
@@ -30,27 +32,18 @@ class StochasticGSRenderer(BaseRenderer):
             raise Framework.RendererError('renderer not implemented in CPU mode')
         if len(Framework.config.GLOBAL.GPU_INDICES) > 1:
             Logger.log_warning(f'renderer not implemented in multi-GPU mode: using GPU {Framework.config.GLOBAL.GPU_INDICES[0]}')
-        self.accum_image = None
-        self.accum_depth = None
-        self.accum_alpha = None
-        self.accum_total_samples = None
-        self.accum_settings = None
-        self.accum_c2w = None
+        self.settings = None
+        self.k_buffer = None
+        self.history = None
+        self.history_c2w = None
+        self.history_w2c = None
 
-    def _render_once(self, settings: 'Settings') -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Renders a single sample, returning image, depth, and alpha."""
-        return render(self.model.means, self.model.scales, self.model.rotations, self.model.opacities, self.model.sh_coefficients, settings)
-
-    def _accumulate_samples(self, settings: 'Settings', samples_per_pixel: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Renders and accumulates the given number of samples per pixel."""
-        image, depth, alpha = self._render_once(settings)
-        depth *= alpha
-        for _ in range(samples_per_pixel - 1):
-            image_i, depth_i, alpha_i = self._render_once(settings)
-            image += image_i
-            depth += depth_i * alpha_i
-            alpha += alpha_i
-        return image, depth, alpha
+    def _render_once(self, settings: 'Settings', view_to_previous_view: torch.Tensor, temporal_mode: 'TemporalMode') -> None:
+        """Renders a single sample and merges it into the history."""
+        self.history = render(
+            self.model.means, self.model.scales, self.model.rotations, self.model.opacities, self.model.sh_coefficients,
+            settings, self.k_buffer, self.history, view_to_previous_view, temporal_mode
+        )
 
     @torch.inference_mode()
     def render_image(self, view: View, to_chw: bool = False, benchmark: bool = False) -> dict[str, torch.Tensor]:
@@ -74,53 +67,40 @@ class StochasticGSRenderer(BaseRenderer):
             self.SUPERSAMPLING_FACTOR,
             self.USE_GPS,
             self.HYBRID_SCHEDULING,
+            self.SPATIAL_REUSE,
         )
-        samples_per_pixel = max(self.SAMPLES_PER_PIXEL, 1)
 
-        if benchmark:
-            return self._render_benchmark(settings, samples_per_pixel)
-
-        if self.DISABLE_PROGRESSIVE_RENDERING:
-            image, depth, alpha = self._accumulate_samples(settings, samples_per_pixel)
-            total_samples = samples_per_pixel
+        # the screen-space k-buffer persists across camera motion, the history is reused depending on the camera change
+        reset = self.DISABLE_PROGRESSIVE_RENDERING and not benchmark
+        if reset or self.settings is None or settings.as_tuple()[2:] != self.settings.as_tuple()[2:]:
+            self.settings = settings
+            self.k_buffer = create_k_buffer(settings)
+            self.history = History(*(torch.empty(0) for _ in range(4)))
+            temporal_mode = TemporalMode.RESET
+        elif (self.history_c2w == view.c2w_numpy).all():
+            temporal_mode = TemporalMode.STATIC
         else:
-            if self.accum_image is None or any(x != y for x, y in zip(self.accum_settings.as_tuple()[2:], settings.as_tuple()[2:])) or (self.accum_c2w != view.c2w_numpy).any():
-                self.accum_image = torch.zeros(view.camera.height, view.camera.width, 3)
-                self.accum_depth = torch.zeros(view.camera.height, view.camera.width, 1)
-                self.accum_alpha = torch.zeros(view.camera.height, view.camera.width, 1)
-                self.accum_total_samples = 0
-                self.accum_settings = settings
-                self.accum_c2w = view.c2w_numpy
-            image_i, depth_i, alpha_i = self._accumulate_samples(self.accum_settings, samples_per_pixel)
-            self.accum_image += image_i
-            self.accum_depth += depth_i
-            self.accum_alpha += alpha_i
-            self.accum_total_samples += samples_per_pixel
-            image, depth, alpha = self.accum_image, self.accum_depth, self.accum_alpha
-            total_samples = self.accum_total_samples
+            temporal_mode = TemporalMode.REPROJECT if self.TEMPORAL_REUSE else TemporalMode.RESET
+        view_to_previous_view = self.history_w2c @ view.c2w if temporal_mode == TemporalMode.REPROJECT else view.c2w
+        for _ in range(max(self.SAMPLES_PER_PIXEL, 1)):
+            self._render_once(settings, view_to_previous_view, temporal_mode)
+            temporal_mode = TemporalMode.STATIC
+        self.history_c2w = view.c2w_numpy
+        self.history_w2c = view.w2c
 
+        # history is premultiplied by alpha and must not be modified in place
+        image, depth, alpha, _ = self.history
+        alpha = alpha.clamp(0.0, 1.0)
+        image = (image + (1.0 - alpha) * view.camera.background_color).clamp(0.0, 1.0)
+        if benchmark:
+            return {'rgb': image}
         depth = depth / alpha.clamp_min(1.0e-8)
-        if total_samples > 1:
-            image = image / total_samples
-            alpha = alpha / total_samples
-        image = image + (1.0 - alpha) * view.camera.background_color
-        image = image.clamp(0.0, 1.0)
 
         if to_chw:
             image = image.permute(2, 0, 1)
             depth = depth.permute(2, 0, 1)
             alpha = alpha.permute(2, 0, 1)
         return {'rgb': image, 'depth': depth, 'alpha': alpha}
-
-    def _render_benchmark(self, settings: 'Settings', samples_per_pixel: int) -> dict[str, torch.Tensor]:
-        """Renders only the image for a given view, skipping all depth-related work."""
-        image = self._render_once(settings)[0]
-        for _ in range(samples_per_pixel - 1):
-            image += self._render_once(settings)[0]
-        if samples_per_pixel > 1:
-            image /= samples_per_pixel
-        image.clamp_(0.0, 1.0)
-        return {'rgb': image}
 
     def postprocess_outputs(self, outputs: dict[str, torch.Tensor], *_) -> dict[str, torch.Tensor]:
         """Postprocesses the model outputs, returning tensors of shape 3xHxW."""

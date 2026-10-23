@@ -17,4 +17,6 @@ void accumulate_scatter(
     const uint32_t frame_idx,
     const CameraSettings& camera,
     const bool use_gps,
+    const uint8_t* blue_noise_slice,
+    const uint32_t blue_noise_rotation,
     const cudaStream_t stream);

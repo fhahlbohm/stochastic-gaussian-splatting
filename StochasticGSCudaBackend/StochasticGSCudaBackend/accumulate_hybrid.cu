@@ -56,7 +56,9 @@ __global__ void bin_cu(
     const float near_plane,
     const float far_plane,
     const bool proper_antialiasing,
-    const float supersampling_factor)
+    const float supersampling_factor,
+    const uint8_t* __restrict__ blue_noise_slice,
+    const uint32_t blue_noise_rotation)
 {
     auto block = cg::this_thread_block();
     auto warp = cg::tiled_partition<32>(block);
@@ -111,7 +113,7 @@ __global__ void bin_cu(
 
     scatter_fragments(
         warp, active, gaussian_idx, fragment, x_min, y_min, aabb_width, fragment_count, mean2d_shifted, conic, opacity,
-        framebuffer, width_int, frame_idx);
+        framebuffer, width_int, frame_idx, blue_noise_slice, blue_noise_rotation);
 }
 
 // counts or writes the tile instances of each binned Gaussian from per-row tile spans as in AccuTile
@@ -259,7 +261,9 @@ __global__ void __launch_bounds__(block_size_gather) gather_cu(
     const uint32_t width,
     const uint32_t height,
     const uint32_t grid_width,
-    const uint32_t frame_idx)
+    const uint32_t frame_idx,
+    const uint8_t* __restrict__ blue_noise_slice,
+    const uint32_t blue_noise_rotation)
 {
     const uint32_t tile_idx = blockIdx.x;
     const uint2 tile_range = tile_instance_ranges[tile_idx];
@@ -270,6 +274,7 @@ __global__ void __launch_bounds__(block_size_gather) gather_cu(
     const uint32_t pixel_y = (tile_idx / grid_width) * tile_height + thread_rank / tile_width;
     const bool inside = pixel_x < width && pixel_y < height;
     const uint32_t pixel_idx = pixel_y * width + pixel_x;
+    const bool use_blue_noise = blue_noise_slice != nullptr;
 
     // fragments behind the closest one cannot win, pixels outside the image skip all fragments
     const unsigned long long initial_fragment = inside ? framebuffer[pixel_idx] : 0ull;
@@ -305,7 +310,7 @@ __global__ void __launch_bounds__(block_size_gather) gather_cu(
             const float alpha = conic_opacity.w * expf(fminf(-power, 0.0f));
             if (alpha < min_alpha_threshold) continue;
             const uint32_t gaussian_idx = static_cast<uint32_t>(fragment & 0xffffffffull);
-            const float sample = rand(frame_idx, gaussian_idx, pixel_x, pixel_y);
+            const float sample = use_blue_noise ? blue_noise(blue_noise_slice, blue_noise_rotation, gaussian_idx, pixel_x, pixel_y) : rand(frame_idx, gaussian_idx, pixel_x, pixel_y);
             if (sample >= alpha) continue;
             closest_fragment = fragment;
         }
@@ -328,6 +333,8 @@ void accumulate_hybrid(
     const uint32_t n_gaussians,
     const uint32_t frame_idx,
     const CameraSettings& camera,
+    const uint8_t* blue_noise_slice,
+    const uint32_t blue_noise_rotation,
     const cudaStream_t stream)
 {
     using namespace hybrid;
@@ -382,7 +389,9 @@ void accumulate_hybrid(
         camera.near_plane,
         camera.far_plane,
         camera.proper_antialiasing,
-        supersampling_factor
+        supersampling_factor,
+        blue_noise_slice,
+        blue_noise_rotation
     );
     check_cuda("hybrid::bin_cu");
     const uint32_t n_binned = std::min(static_cast<uint32_t>(n_binned_tensor.item<int>()), max_binned);
@@ -474,7 +483,9 @@ void accumulate_hybrid(
         width_int,
         height_int,
         grid_width,
-        frame_idx
+        frame_idx,
+        blue_noise_slice,
+        blue_noise_rotation
     );
     check_cuda("hybrid::gather_cu");
 }

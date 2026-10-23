@@ -16,4 +16,6 @@ void accumulate_hybrid(
     const uint32_t n_gaussians,
     const uint32_t frame_idx,
     const CameraSettings& camera,
+    const uint8_t* blue_noise_slice,
+    const uint32_t blue_noise_rotation,
     const cudaStream_t stream);

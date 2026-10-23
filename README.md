@@ -32,6 +32,17 @@ This project is built on the following papers and their open-source implementati
 }
 ```
 ```bibtex
+@misc{windisch2026steadysplats,
+  title         = {{SteadySplats}: Resampling of Low-Variance Gaussians for High-Fidelity Stochastic Rendering},
+  author        = {Windisch, Felix and Köhler, Thomas and Radl, Lukas and Wyman, Chris and Kopanas, Georgios and Kerbl, Bernhard and Steinberger, Markus},
+  year          = {2026},
+  eprint        = {2610.05576},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CV},
+  url           = {https://arxiv.org/abs/2610.05576}
+}
+```
+```bibtex
 @inproceedings{hahlbohm2026fastergs,
   title     = {{Faster-GS}: Analyzing and Improving Gaussian Splatting Optimization},
   author    = {Hahlbohm, Florian and Franke, Linus and Eisemann, Martin and Magnor, Marcus},
@@ -46,7 +57,7 @@ This project is built on the following papers and their open-source implementati
 
 ## Overview
 
-Each sample is rendered in two stages (`render.cu`):
+Each sample is rendered in three stages (`render.cu`):
 
 1. **Accumulation** keeps the closest *accepted* fragment of each (sub)pixel. `USE_GPS` selects one of two approaches:
    - **Stochastic transparency** (`accumulate_st_cu`): for every pixel inside a Gaussian's screen-space AABB,
@@ -57,8 +68,9 @@ Each sample is rendered in two stages (`render.cu`):
    - **Gaussian Point Splatting (GPS)** (`accumulate_gps_cu`): instead of testing pixel centers, each Gaussian
      emits a Poisson-distributed number of sample points drawn from its own 2D distribution, splatting each as a
      point. This integrates the Gaussian over the pixel footprint by construction.
-2. **Resolving** (`resolve_cu`) evaluates spherical harmonics for the **single** winning Gaussian of each (sub)pixel
-   and writes color, depth, and alpha.
+2. **Sampling** (`sample_cu`) evaluates spherical harmonics for the **single** winning Gaussian of each (sub)pixel.
+3. **Resolving** (`resolve_cu`) writes color, depth, and alpha, optionally with spatio-temporal sample reuse. Both
+   kernels are in `resolve.cu`.
 
 Averaging `SAMPLES_PER_PIXEL` independent frames — or accumulating them progressively across calls — converges to the
 correctly blended image. An optional integer `SUPERSAMPLING_FACTOR` renders the framebuffer at higher resolution and
@@ -100,6 +112,27 @@ most `max_binned_gaussians` are binned, beyond which they fall back to the scatt
   Gaussian are independent samples, this only changes the random numbers, not the distribution of the result. This is
   the expand-and-distribute strategy of the original GPS implementation applied to large Gaussians only, small ones keep
   the sequential fast path that avoids loading their parameters twice and the per-point bookkeeping.
+
+### Spatio-Temporal Sample Reuse
+
+The rendering side of SteadySplats works with both approaches, both schedulings, and supersampling:
+
+- **`SPATIAL_REUSE`** (off by default): each (sub)pixel also uses the samples of its four neighbors with
+  self-normalized resampling weights. The change in alpha is evaluated exactly, the change in occlusion is approximated
+  with a screen-space K-buffer of the primitives recently sampled at the pixel (`K = 4`).
+- **`TEMPORAL_REUSE`** (off by default): while the camera moves, the reprojected history (Catmull-Rom) is blended in
+  with weight 0.7, reduced by soft rejection against the 3x3 YCoCg moments of the current samples. While the camera
+  stands still, frames are averaged as before, weighted by their resampling weights.
+- **Blue noise** (stochastic transparency only): the fragment thresholds come from NVIDIA's
+  [spatio-temporal blue noise](https://github.com/NVIDIA-RTX/STBN) with per-primitive R2 offsets. The texture is licensed
+  for non-commercial use only and therefore not included: installing the CUDA backend downloads it and stores the
+  scalar 128x128x64 volume next to the extension, which then always uses it. Set the environment variable
+  `STOCHASTICGS_NO_STBN=1` during installation to skip the download, the backend then uses white noise.
+
+The constants of the paper are `constexpr` values at the top of `resolve.cu`. Spatial reuse needs `K * 24 + 32` bytes per
+framebuffer pixel (about 270 MB at 1080p). Models trained with the paper's color variance loss are much less noisy. To
+evaluate test views independently, set `DISABLE_PROGRESSIVE_RENDERING`, otherwise consecutive views are treated as camera
+motion.
 
 ### Possible Improvements
 
@@ -165,6 +198,8 @@ The CUDA backend can also be built standalone as a PyTorch extension:
 ```shell
 pip install git+https://github.com/fhahlbohm/stochastic-gaussian-splatting/#subdirectory=StochasticGSCudaBackend --no-build-isolation
 ```
+This also downloads NVIDIA's spatio-temporal blue noise (non-commercial license, see above) unless
+`STOCHASTICGS_NO_STBN=1` is set. Note that wheels built this way contain the blue noise.
 
 
 ## Usage
@@ -188,6 +223,7 @@ The `RENDERER` section selects how the model is rendered:
 - `SUPERSAMPLING_FACTOR`, `PROPER_ANTIALIASING`: integer supersampling and the antialiasing filter with opacity
   compensation instead of plain dilation.
 - `SAMPLES_PER_PIXEL`, `DISABLE_PROGRESSIVE_RENDERING`: samples per call and whether consecutive calls accumulate.
+- `SPATIAL_REUSE`, `TEMPORAL_REUSE`: see [Spatio-Temporal Sample Reuse](#spatio-temporal-sample-reuse).
 
 To launch, fill in the `/TODO/` paths and run the config through the standard NeRFICG entry point:
 ```shell

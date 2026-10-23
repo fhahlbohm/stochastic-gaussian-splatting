@@ -120,3 +120,17 @@ __device__ inline float rand(uint32_t frame, uint32_t instance, uint32_t x, uint
     const uint32_t seed = instance ^ (frame * 1973u) ^ (x * 9277u) ^ (y * 2699u);
     return __uint_as_float(0x3f800000u | (pcg_hash(seed) >> 9u)) - 1.0f;
 }
+
+// spatio-temporal blue noise with per-primitive R2 offsets and a golden-ratio rotation per pass, in 0.32 fixed point
+inline constexpr uint32_t blue_noise_width = 128;
+inline constexpr uint32_t blue_noise_height = 128;
+inline constexpr uint32_t blue_noise_depth = 64;
+
+__device__ inline float blue_noise(const uint8_t* __restrict__ blue_noise_slice, const uint32_t rotation, uint32_t instance, uint32_t x, uint32_t y) {
+    // top 7 bits -> [0, 128)
+    const uint32_t offset_x = (instance * 0xC13FA9A9u) >> 25u; // 1 / plastic number
+    const uint32_t offset_y = (instance * 0x91E10DA5u) >> 25u; // 1 / plastic number^2
+    const uint32_t texel_idx = ((y + offset_y) % blue_noise_height) * blue_noise_width + (x + offset_x) % blue_noise_width;
+    const uint32_t value = (static_cast<uint32_t>(blue_noise_slice[texel_idx]) << 24u) + (1u << 23u) + rotation;
+    return static_cast<float>(value >> 8u) * 5.9604644775390625e-8f; // 2^-24
+}
