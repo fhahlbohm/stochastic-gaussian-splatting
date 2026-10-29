@@ -291,7 +291,8 @@ __global__ void __launch_bounds__(block_size_gather) gather_cu(
             const uint32_t binned_idx = instance_binned_indices[fetch_idx];
             collected_fragments[thread_rank] = binned_fragments[binned_idx];
             collected_mean2d_shifted[thread_rank] = binned_mean2d_shifted[binned_idx];
-            collected_conic_opacity[thread_rank] = binned_conic_opacity[binned_idx];
+            const float4 conic_opacity = binned_conic_opacity[binned_idx];
+            collected_conic_opacity[thread_rank] = make_float4(scale_conic_for_exp2(make_float3(conic_opacity)), conic_opacity.w);
             collected_bounds[thread_rank] = binned_bounds[binned_idx];
         }
         __syncthreads();
@@ -299,15 +300,15 @@ __global__ void __launch_bounds__(block_size_gather) gather_cu(
         for (uint32_t j = 0; j < batch_size; j++) {
             const unsigned long long fragment = collected_fragments[j];
             if (fragment >= closest_fragment) continue;
-            // same pixels and evaluation as the scatter path
+            // same pixels and evaluation as the scatter path up to fma contraction
             const ushort4 bounds = collected_bounds[j];
             if (pixel_x < bounds.x || pixel_x >= bounds.y || pixel_y < bounds.z || pixel_y >= bounds.w) continue;
             const float2 mean2d_shifted = collected_mean2d_shifted[j];
             const float4 conic_opacity = collected_conic_opacity[j];
             const float delta_x = static_cast<float>(pixel_x) - mean2d_shifted.x;
             const float delta_y = static_cast<float>(pixel_y) - mean2d_shifted.y;
-            const float power = 0.5f * (conic_opacity.x * delta_x * delta_x + conic_opacity.z * delta_y * delta_y) + conic_opacity.y * delta_x * delta_y;
-            const float alpha = conic_opacity.w * expf(fminf(-power, 0.0f));
+            const float exponent = delta_x * (conic_opacity.x * delta_x + conic_opacity.y * delta_y) + conic_opacity.z * delta_y * delta_y;
+            const float alpha = conic_opacity.w * exp2f(fminf(exponent, 0.0f));
             if (alpha < min_alpha_threshold) continue;
             const uint32_t gaussian_idx = static_cast<uint32_t>(fragment & 0xffffffffull);
             const float sample = use_blue_noise ? blue_noise(blue_noise_slice, blue_noise_rotation, gaussian_idx, pixel_x, pixel_y) : rand(frame_idx, gaussian_idx, pixel_x, pixel_y);

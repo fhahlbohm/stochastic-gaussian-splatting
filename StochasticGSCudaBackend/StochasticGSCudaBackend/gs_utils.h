@@ -17,6 +17,12 @@ inline constexpr float min_alpha_threshold_rcp = 255.0f;
 inline constexpr float min_alpha_threshold = 1.0f / min_alpha_threshold_rcp; // 0.00392156862
 inline constexpr float max_power_threshold = 5.54126354516f; // ln(min_alpha_threshold_rcp)
 
+// folds -0.5 and log2(e) into the conic so that alpha evaluates the Gaussian with a single exp2
+__device__ inline float3 scale_conic_for_exp2(const float3& conic) {
+    constexpr float log2e = 1.44269504089f;
+    return make_float3(-0.5f * log2e * conic.x, -log2e * conic.y, -0.5f * log2e * conic.z);
+}
+
 
 // load, transform, and project Gaussian parameters with early exits
 struct mat3x3 {

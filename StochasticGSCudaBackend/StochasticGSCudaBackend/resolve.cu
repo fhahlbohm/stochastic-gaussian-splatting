@@ -98,9 +98,10 @@ __global__ void sample_cu(
     if (projected) {
         const float delta_x = static_cast<float>(pixel_idx % width_int) - (mean2d.x - 0.5f);
         const float delta_y = static_cast<float>(pixel_idx / width_int) - (mean2d.y - 0.5f);
+        const float3 conic_exp2 = scale_conic_for_exp2(conic);
         auto evaluate_alpha = [&](const float dx, const float dy) {
-            const float power = 0.5f * (conic.x * dx * dx + conic.z * dy * dy) + conic.y * dx * dy;
-            const float fragment_alpha = opacity * expf(fminf(-power, 0.0f));
+            const float exponent = dx * (conic_exp2.x * dx + conic_exp2.y * dy) + conic_exp2.z * dy * dy;
+            const float fragment_alpha = opacity * exp2f(fminf(exponent, 0.0f));
             return fragment_alpha < min_alpha_threshold ? 0.0f : fragment_alpha;
         };
         // the clamp only guards against rounding

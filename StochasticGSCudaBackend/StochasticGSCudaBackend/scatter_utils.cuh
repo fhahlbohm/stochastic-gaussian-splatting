@@ -30,13 +30,14 @@ __device__ inline void scatter_fragments(
     const uint32_t blue_noise_rotation)
 {
     const bool use_blue_noise = blue_noise_slice != nullptr;
+    const float3 conic_exp2 = scale_conic_for_exp2(conic);
     for (uint32_t fragment_idx = 0; active && fragment_idx < fragment_count && fragment_idx < n_sequential_threshold; fragment_idx++) {
         const uint32_t pixel_x = x_min + (fragment_idx % aabb_width);
         const uint32_t pixel_y = y_min + (fragment_idx / aabb_width);
         const float delta_x = static_cast<float>(pixel_x) - mean2d_shifted.x;
         const float delta_y = static_cast<float>(pixel_y) - mean2d_shifted.y;
-        const float power = 0.5f * (conic.x * delta_x * delta_x + conic.z * delta_y * delta_y) + conic.y * delta_x * delta_y;
-        const float alpha = opacity * expf(fminf(-power, 0.0f));
+        const float exponent = delta_x * (conic_exp2.x * delta_x + conic_exp2.y * delta_y) + conic_exp2.z * delta_y * delta_y;
+        const float alpha = opacity * exp2f(fminf(exponent, 0.0f));
         if (alpha < min_alpha_threshold) continue;
         const float sample = use_blue_noise ? blue_noise(blue_noise_slice, blue_noise_rotation, gaussian_idx, pixel_x, pixel_y) : rand(frame_idx, gaussian_idx, pixel_x, pixel_y);
         if (sample >= alpha) continue;
@@ -61,10 +62,10 @@ __device__ inline void scatter_fragments(
             warp.shfl(mean2d_shifted.x, current_lane),
             warp.shfl(mean2d_shifted.y, current_lane)
         );
-        const float3 conic_coop = make_float3(
-            warp.shfl(conic.x, current_lane),
-            warp.shfl(conic.y, current_lane),
-            warp.shfl(conic.z, current_lane)
+        const float3 conic_exp2_coop = make_float3(
+            warp.shfl(conic_exp2.x, current_lane),
+            warp.shfl(conic_exp2.y, current_lane),
+            warp.shfl(conic_exp2.z, current_lane)
         );
         const float opacity_coop = warp.shfl(opacity, current_lane);
         const unsigned long long fragment_coop = warp.shfl(fragment, current_lane);
@@ -81,8 +82,8 @@ __device__ inline void scatter_fragments(
             const uint32_t pixel_y = y_min_coop + (fragment_idx / aabb_width_coop);
             const float delta_x = static_cast<float>(pixel_x) - mean2d_shifted_coop.x;
             const float delta_y = static_cast<float>(pixel_y) - mean2d_shifted_coop.y;
-            const float power = 0.5f * (conic_coop.x * delta_x * delta_x + conic_coop.z * delta_y * delta_y) + conic_coop.y * delta_x * delta_y;
-            const float alpha = opacity_coop * expf(fminf(-power, 0.0f));
+            const float exponent = delta_x * (conic_exp2_coop.x * delta_x + conic_exp2_coop.y * delta_y) + conic_exp2_coop.z * delta_y * delta_y;
+            const float alpha = opacity_coop * exp2f(fminf(exponent, 0.0f));
             if (alpha < min_alpha_threshold) continue;
             const float sample = use_blue_noise ? blue_noise(blue_noise_slice, blue_noise_rotation, gaussian_idx_coop, pixel_x, pixel_y) : rand(frame_idx, gaussian_idx_coop, pixel_x, pixel_y);
             if (sample >= alpha) continue;
