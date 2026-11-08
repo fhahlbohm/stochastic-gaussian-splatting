@@ -1,5 +1,6 @@
 #include <cstdint>
 #include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
 #include <torch/extension.h>
 #include "helper_math.h"
 #include "math_utils.h"
@@ -43,6 +44,8 @@ render(
     const torch::Tensor& view_to_previous_view,
     const int temporal_mode)
 {
+    const at::cuda::CUDAGuard device_guard(means.device());
+
     auto stream = at::cuda::getCurrentCUDAStream();
     const CameraSettings camera = {
         width, height, focal_x, focal_y, center_x, center_y, near_plane, far_plane, proper_antialiasing,
